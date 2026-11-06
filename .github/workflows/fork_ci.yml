@@ -1,0 +1,74 @@
+name: Fork CI (macOS, iPad, unit tests)
+
+# Fork-only workflow, not meant for upstream: the project builds its Apple
+# targets on Xcode Cloud, which a fork cannot use. This builds the macOS app and
+# the iPad library on a GitHub macOS runner, and reuses the upstream unit tests.
+on:
+  push:
+    branches: [ feature-cloud-backup ]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    uses: ./.github/workflows/Unit_Tests.yml
+
+  apple:
+    name: ${{ matrix.name }}
+    runs-on: macos-26
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: iPad library
+            kind: ipad
+          - name: macOS desktop
+            kind: desktop
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Xcode
+      run: |
+        ls -d /Applications/Xcode*.app
+        xcodebuild -version
+
+    - name: Metal toolchain
+      run: |
+        xcrun -find metal || xcodebuild -downloadComponent MetalToolchain
+        xcrun -find metal
+
+    - name: Dependencies
+      run: |
+        command -v zstd || brew install zstd
+        cd macOS && scripts/download_deps
+
+    - name: List schemes and targets
+      run: xcodebuild -project macOS/xLights.xcodeproj -list
+
+    - name: Build
+      run: |
+        BEAUTIFY=cat
+        command -v xcbeautify >/dev/null && BEAUTIFY="xcbeautify --renderer github-actions"
+        COMMON="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="
+        if [ "${{ matrix.kind }}" = "ipad" ]; then
+          if xcodebuild -project macOS/xLights.xcodeproj -list | grep -qw "xLights-iPadLib"; then
+            xcodebuild -project macOS/xLights.xcodeproj -scheme xLights-iPadLib -configuration Debug \
+              -destination 'generic/platform=iOS' $COMMON build | $BEAUTIFY
+          else
+            xcodebuild -project macOS/xLights.xcodeproj -target xLights-iPadLib -configuration Debug \
+              -sdk iphoneos $COMMON build | $BEAUTIFY
+          fi
+        else
+          xcodebuild -project macOS/xLights.xcodeproj -scheme xLights -configuration Debug \
+            -destination 'generic/platform=macOS' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES $COMMON build | $BEAUTIFY
+        fi

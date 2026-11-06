@@ -13,6 +13,7 @@
 #include "CloudBackupDialog.h"
 #include "utils/ExternalHooks.h"
 #include "utils/S3Client.h"
+#include "utils/string_utils.h"
 
 #include <wx/button.h>
 #include <wx/datetime.h>
@@ -60,10 +61,6 @@ std::string TrimSlashes(std::string s) {
         s.erase(0, 1);
     }
     return s;
-}
-
-bool EndsWith(const std::string& s, const std::string& suffix) {
-    return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
 // "2026-11-06-143000" (UTC) to a time_t; 0 when it does not parse.

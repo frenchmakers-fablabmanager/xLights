@@ -14,6 +14,7 @@
 #include "FileUtils.h"
 #include "Sha256.h"
 #include "XsqFileScanner.h"
+#include "string_utils.h"
 #include "xLightsVersion.h"
 
 #include <minizip/unzip.h>
@@ -45,11 +46,6 @@ std::string ToUtf8Generic(const fs::path& p) {
 
 fs::path FromUtf8(const std::string& s) {
     return fs::path(std::u8string(s.begin(), s.end()));
-}
-
-std::string Lower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-    return s;
 }
 
 // Key used to tell whether two paths name the same file.
@@ -305,10 +301,6 @@ std::string JsonString(const nlohmann::json& o, const char* key) {
 uint64_t JsonUInt(const nlohmann::json& o, const char* key) {
     auto it = o.find(key);
     return (it != o.end() && it->is_number_unsigned()) ? it->get<uint64_t>() : 0;
-}
-
-bool StartsWith(const std::string& s, const char* prefix) {
-    return s.rfind(prefix, 0) == 0;
 }
 
 } // namespace

@@ -12,20 +12,11 @@
 
 #include "ai/WxServiceSettingsStore.h"
 #include "settings/XLightsConfigAdapter.h"
-
-#include <algorithm>
-#include <cctype>
+#include "utils/string_utils.h"
 
 namespace {
 
 const char* SECRET_NAME = "xLightsCloudStorage";
-
-std::string Trim(std::string s) {
-    auto notSpace = [](unsigned char c) { return !std::isspace(c); };
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), notSpace));
-    s.erase(std::find_if(s.rbegin(), s.rend(), notSpace).base(), s.end());
-    return s;
-}
 
 } // namespace
 

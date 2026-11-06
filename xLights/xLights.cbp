@@ -1609,6 +1609,12 @@
 		<Unit filename="../src-ui-wx/shared/utils/xlDisplayInfo.h" />
 		<Unit filename="../src-core/utils/GitUtils.cpp" />
 		<Unit filename="../src-core/utils/GitUtils.h" />
+		<Unit filename="../src-core/utils/S3Client.cpp" />
+		<Unit filename="../src-core/utils/S3Client.h" />
+		<Unit filename="../src-core/utils/Sha256.cpp" />
+		<Unit filename="../src-core/utils/Sha256.h" />
+		<Unit filename="../src-core/utils/ShowArchiver.cpp" />
+		<Unit filename="../src-core/utils/ShowArchiver.h" />
 		<Unit filename="../src-core/utils/CurlManager.cpp" />
 		<Unit filename="../src-core/utils/CurlManager.h" />
 		<Unit filename="../src-core/utils/FloatChecks.h" />

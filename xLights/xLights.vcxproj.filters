@@ -1106,6 +1106,15 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src-ui-wx\sequencer\MetronomeLabelDialog.cpp" />
+    <ClCompile Include="..\src-core\utils\S3Client.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src-core\utils\Sha256.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src-core\utils\ShowArchiver.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
     <ClCompile Include="..\src-core\utils\CurlManager.cpp">
       <Filter>utils</Filter>
     </ClCompile>
@@ -2544,6 +2553,15 @@
       <Filter>Effects</Filter>
     </ClInclude>
     <ClInclude Include="..\src-ui-wx\sequencer\MetronomeLabelDialog.h" />
+    <ClInclude Include="..\src-core\utils\S3Client.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src-core\utils\Sha256.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src-core\utils\ShowArchiver.h">
+      <Filter>utils</Filter>
+    </ClInclude>
     <ClInclude Include="..\src-core\utils\CurlManager.h">
       <Filter>utils</Filter>
     </ClInclude>

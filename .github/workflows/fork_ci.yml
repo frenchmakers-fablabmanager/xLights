@@ -2,7 +2,7 @@ name: Fork CI (macOS, iPad, unit tests)
 
 # Fork-only workflow, not meant for upstream: the project builds its Apple
 # targets on Xcode Cloud, which a fork cannot use. This builds the macOS app and
-# the iPad library on a GitHub macOS runner, and reuses the upstream unit tests.
+# the iPad code on a GitHub macOS runner, and reuses the upstream unit tests.
 on:
   push:
     branches: [ feature-cloud-backup ]
@@ -20,14 +20,22 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: macos-26
     timeout-minutes: 240
+    # The full iPad library also builds the SwiftUI app sources, which are not
+    # touched here; a failure there is reported but does not fail the run.
+    continue-on-error: ${{ matrix.optional }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          - name: iOS core (src-core for iPad)
+            kind: ios-core
+            optional: false
           - name: iPad library
             kind: ipad
+            optional: true
           - name: macOS desktop
             kind: desktop
+            optional: false
     defaults:
       run:
         shell: bash
@@ -39,8 +47,7 @@ jobs:
 
     - name: Xcode
       run: |
-        ls -d /Applications/Xcode*.app
-        xcodebuild -version
+        echo "::notice title=Xcode::$(xcodebuild -version | tr '\n' ' ') - installed: $(ls -d /Applications/Xcode*.app | xargs -n1 basename | tr '\n' ' ')"
 
     - name: Metal toolchain
       run: |
@@ -52,23 +59,18 @@ jobs:
         command -v zstd || brew install zstd
         cd macOS && scripts/download_deps
 
-    - name: List schemes and targets
-      run: xcodebuild -project macOS/xLights.xcodeproj -list
-
     - name: Build
       run: |
         BEAUTIFY=cat
         command -v xcbeautify >/dev/null && BEAUTIFY="xcbeautify --renderer github-actions"
         COMMON="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="
-        if [ "${{ matrix.kind }}" = "ipad" ]; then
-          if xcodebuild -project macOS/xLights.xcodeproj -list | grep -qw "xLights-iPadLib"; then
-            xcodebuild -project macOS/xLights.xcodeproj -scheme xLights-iPadLib -configuration Debug \
-              -destination 'generic/platform=iOS' $COMMON build | $BEAUTIFY
-          else
-            xcodebuild -project macOS/xLights.xcodeproj -target xLights-iPadLib -configuration Debug \
-              -sdk iphoneos $COMMON build | $BEAUTIFY
-          fi
-        else
-          xcodebuild -project macOS/xLights.xcodeproj -scheme xLights -configuration Debug \
-            -destination 'generic/platform=macOS' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES $COMMON build | $BEAUTIFY
-        fi
+        P=macOS/xLights.xcodeproj
+        case "${{ matrix.kind }}" in
+          ios-core)
+            xcodebuild -project $P -target xLights-core -configuration Debug -sdk iphoneos $COMMON build | $BEAUTIFY ;;
+          ipad)
+            xcodebuild -project $P -target xLights-iPadLib -configuration Debug -sdk iphoneos $COMMON build | $BEAUTIFY ;;
+          desktop)
+            xcodebuild -project $P -scheme xLights -configuration Debug \
+              -destination 'generic/platform=macOS' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES $COMMON build | $BEAUTIFY ;;
+        esac

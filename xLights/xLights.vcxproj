@@ -982,6 +982,7 @@ xcopy /Y /S /I "$(SolutionDir)..\resources\meshobjects\*" "$(TargetDir)meshobjec
     <ClCompile Include="..\src-core\render\PixelBuffer.cpp" />
     <ClCompile Include="..\src-core\models\Pixels.cpp" />
     <ClCompile Include="..\src-ui-wx\setup\PixelTestDialog.cpp" />
+    <ClCompile Include="..\src-ui-wx\preferences\CloudStorageSettingsPanel.cpp" />
     <ClCompile Include="..\src-ui-wx\preferences\BackupSettingsPanel.cpp" />
     <ClCompile Include="..\src-ui-wx\preferences\CheckSequenceSettingsPanel.cpp" />
     <ClCompile Include="..\src-ui-wx\preferences\ColorManagerSettingsPanel.cpp" />
@@ -1009,6 +1010,9 @@ xcopy /Y /S /I "$(SolutionDir)..\resources\meshobjects\*" "$(TargetDir)meshobjec
     <ClCompile Include="..\src-ui-wx\sequencer\RenderCommandEvent.cpp" />
     <ClCompile Include="..\src-ui-wx\diagnostics\RenderProgressDialog.cpp" />
     <ClCompile Include="..\src-ui-wx\media\ResizeImageDialog.cpp" />
+    <ClCompile Include="..\src-ui-wx\app-shell\CloudBackupDialog.cpp" />
+    <ClCompile Include="..\src-ui-wx\app-shell\CloudRestoreDialog.cpp" />
+    <ClCompile Include="..\src-ui-wx\app-shell\CloudStorageSettings.cpp" />
     <ClCompile Include="..\src-ui-wx\app-shell\RestoreBackupDialog.cpp" />
     <ClCompile Include="..\src-ui-wx\app-shell\SaveChangesDialog.cpp" />
     <ClCompile Include="..\src-ui-wx\automation\ScriptsDialog.cpp" />
@@ -1664,6 +1668,7 @@ xcopy /Y /S /I "$(SolutionDir)..\resources\meshobjects\*" "$(TargetDir)meshobjec
     <ClInclude Include="..\src-core\render\PixelBuffer.h" />
     <ClInclude Include="..\src-core\models\Pixels.h" />
     <ClInclude Include="..\src-ui-wx\setup\PixelTestDialog.h" />
+    <ClInclude Include="..\src-ui-wx\preferences\CloudStorageSettingsPanel.h" />
     <ClInclude Include="..\src-ui-wx\preferences\BackupSettingsPanel.h" />
     <ClInclude Include="..\src-ui-wx\preferences\CheckSequenceSettingsPanel.h" />
     <ClInclude Include="..\src-ui-wx\preferences\ColorManagerSettingsPanel.h" />
@@ -1688,6 +1693,9 @@ xcopy /Y /S /I "$(SolutionDir)..\resources\meshobjects\*" "$(TargetDir)meshobjec
     <ClInclude Include="..\src-core\render\RenderUtils.h" />
     <ClInclude Include="..\src-core\render\ViewpointMgr.h" />
     <ClInclude Include="..\src-ui-wx\media\ResizeImageDialog.h" />
+    <ClInclude Include="..\src-ui-wx\app-shell\CloudBackupDialog.h" />
+    <ClInclude Include="..\src-ui-wx\app-shell\CloudRestoreDialog.h" />
+    <ClInclude Include="..\src-ui-wx\app-shell\CloudStorageSettings.h" />
     <ClInclude Include="..\src-ui-wx\app-shell\RestoreBackupDialog.h" />
     <ClInclude Include="..\src-ui-wx\app-shell\SaveChangesDialog.h" />
     <ClInclude Include="..\src-ui-wx\automation\ScriptsDialog.h" />

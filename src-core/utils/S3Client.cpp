@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <fstream>
@@ -55,9 +56,31 @@ int SeekCb(void* userp, curl_off_t offset, int origin) {
     return CURL_SEEKFUNC_OK;
 }
 
+struct WriteState {
+    CURL* curl = nullptr;
+    std::string* body = nullptr;
+    const std::function<bool(const char*, size_t)>* sink = nullptr;
+    bool sinkFailed = false;
+};
+
+// Error bodies always land in Response::body so they can be described; only
+// a successful body goes to the sink.
 size_t WriteCb(char* ptr, size_t size, size_t nmemb, void* userp) {
-    static_cast<std::string*>(userp)->append(ptr, size * nmemb);
-    return size * nmemb;
+    auto* ws = static_cast<WriteState*>(userp);
+    size_t n = size * nmemb;
+    if (ws->sink && *ws->sink) {
+        long code = 0;
+        curl_easy_getinfo(ws->curl, CURLINFO_RESPONSE_CODE, &code);
+        if (code >= 200 && code < 300) {
+            if (!(*ws->sink)(ptr, n)) {
+                ws->sinkFailed = true;
+                return 0;
+            }
+            return n;
+        }
+    }
+    ws->body->append(ptr, n);
+    return n;
 }
 
 size_t HeaderCb(char* ptr, size_t size, size_t nmemb, void* userp) {
@@ -77,12 +100,13 @@ size_t HeaderCb(char* ptr, size_t size, size_t nmemb, void* userp) {
 
 struct ProgressState {
     const std::function<bool(uint64_t)>* cb = nullptr;
+    bool download = false;
     bool aborted = false;
 };
 
-int XferCb(void* userp, curl_off_t, curl_off_t, curl_off_t, curl_off_t ulnow) {
+int XferCb(void* userp, curl_off_t, curl_off_t dlnow, curl_off_t, curl_off_t ulnow) {
     auto* ps = static_cast<ProgressState*>(userp);
-    if (ps->cb && *ps->cb && !(*ps->cb)((uint64_t)ulnow)) {
+    if (ps->cb && *ps->cb && !(*ps->cb)((uint64_t)(ps->download ? dlnow : ulnow))) {
         ps->aborted = true;
         return 1;
     }
@@ -98,6 +122,17 @@ std::string TrimSlashes(std::string s) {
 
 bool IsRetryable(long status) {
     return status == 0 || status == 408 || status == 429 || status >= 500;
+}
+
+// Sleeps in short steps so a cancel during the back-off is noticed quickly.
+bool WaitBeforeRetry(int seconds, const std::function<bool()>& keepGoing) {
+    for (int i = 0; i < seconds * 5; ++i) {
+        if (!keepGoing()) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    return keepGoing();
 }
 
 std::string PathUtf8(const std::filesystem::path& p) {
@@ -153,7 +188,20 @@ std::string S3Client::ObjectUrl(const std::string& key) const {
 S3Client::Response S3Client::Request(const std::string& method, const std::string& key, const std::string& query,
                                      const char* body, size_t bodyLen, const std::string& contentType,
                                      const std::function<bool(uint64_t)>& uploadProgress) const {
+    RequestOptions opts;
+    opts.body = body;
+    opts.bodyLen = bodyLen;
+    opts.contentType = contentType;
+    opts.progress = uploadProgress;
+    return Send(method, key, query, opts);
+}
+
+S3Client::Response S3Client::Send(const std::string& method, const std::string& key, const std::string& query,
+                                  const RequestOptions& opts) const {
     static const std::string USERAGENT = "xLights-" + xlights_version_string;
+    const char* body = opts.body;
+    const size_t bodyLen = opts.bodyLen;
+    const std::string& contentType = opts.contentType;
     Response r;
     std::string url = ObjectUrl(key);
     if (!query.empty()) {
@@ -216,13 +264,14 @@ S3Client::Response S3Client::Request(const std::string& method, const std::strin
         curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, method.c_str());
     }
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
+    WriteState ws{ c, &r.body, &opts.sink, false };
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, WriteCb);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, &r.body);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &ws);
     curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, HeaderCb);
     curl_easy_setopt(c, CURLOPT_HEADERDATA, &r.headers);
 
-    ProgressState ps{ &uploadProgress, false };
-    if (uploadProgress) {
+    ProgressState ps{ &opts.progress, opts.downloadProgress, false };
+    if (opts.progress) {
         curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
         curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, XferCb);
         curl_easy_setopt(c, CURLOPT_XFERINFODATA, &ps);
@@ -232,7 +281,8 @@ S3Client::Response S3Client::Request(const std::string& method, const std::strin
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &r.status);
     r.aborted = ps.aborted;
     if (rc != CURLE_OK) {
-        r.curlError = errbuf[0] ? errbuf : curl_easy_strerror(rc);
+        r.curlError = ws.sinkFailed ? "Unable to write the downloaded data (disk full?)"
+                                    : (errbuf[0] ? errbuf : curl_easy_strerror(rc));
     }
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(c);
@@ -332,7 +382,10 @@ bool S3Client::UploadFile(const std::string& key, const std::filesystem::path& f
         if (r.ok() || r.aborted || !IsRetryable(r.status)) {
             break;
         }
-        std::this_thread::sleep_for(std::chrono::seconds(2 << attempt));
+        if (!WaitBeforeRetry(2 << attempt, [&]() { return !progress || progress(0, size); })) {
+            r.aborted = true;
+            break;
+        }
     }
     if (r.aborted) {
         if (cancelled) {
@@ -417,7 +470,10 @@ bool S3Client::UploadMultipart(const std::string& key, const std::filesystem::pa
                 break;
             }
             spdlog::warn("S3: part {} failed ({}), retrying", part, Describe(r));
-            std::this_thread::sleep_for(std::chrono::seconds(2 << attempt));
+            if (!WaitBeforeRetry(2 << attempt, [&]() { return !progress || progress(sentBefore, size); })) {
+                r.aborted = true;
+                break;
+            }
         }
         if (r.aborted) {
             if (cancelled) {
@@ -464,4 +520,149 @@ bool S3Client::UploadMultipart(const std::string& key, const std::filesystem::pa
     }
     spdlog::info("S3: multipart upload of {} completed ({} parts)", key, etags.size());
     return true;
+}
+
+bool S3Client::ListObjects(const std::string& prefix, const std::string& delimiter, std::vector<S3Object>& objects,
+                           std::vector<std::string>& commonPrefixes, std::string& error) {
+    std::string token;
+    for (int page = 0; page < 1000; ++page) {
+        // Parameters in sorted order, as SigV4 canonicalises them.
+        std::string query;
+        if (!token.empty()) {
+            query += "continuation-token=" + UriEncode(token, false) + "&";
+        }
+        if (!delimiter.empty()) {
+            query += "delimiter=" + UriEncode(delimiter, false) + "&";
+        }
+        query += "list-type=2&prefix=" + UriEncode(prefix, false);
+
+        Response r;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            r = Request("GET", "", query, nullptr, 0, "");
+            if (r.ok() || !IsRetryable(r.status)) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1 << attempt));
+        }
+        if (!r.ok()) {
+            error = Describe(r);
+            return false;
+        }
+        pugi::xml_document doc;
+        if (!doc.load_buffer(r.body.data(), r.body.size())) {
+            error = "Unexpected response to the bucket listing";
+            return false;
+        }
+        auto root = doc.child("ListBucketResult");
+        for (auto c = root.child("Contents"); c; c = c.next_sibling("Contents")) {
+            S3Object o;
+            o.key = c.child_value("Key");
+            o.size = std::strtoull(c.child_value("Size"), nullptr, 10);
+            o.lastModified = c.child_value("LastModified");
+            objects.push_back(std::move(o));
+        }
+        for (auto c = root.child("CommonPrefixes"); c; c = c.next_sibling("CommonPrefixes")) {
+            commonPrefixes.push_back(c.child_value("Prefix"));
+        }
+        if (std::string(root.child_value("IsTruncated")) != "true") {
+            return true;
+        }
+        token = root.child_value("NextContinuationToken");
+        if (token.empty()) {
+            return true;
+        }
+    }
+    error = "The bucket listing is too long";
+    return false;
+}
+
+bool S3Client::ReadObject(const std::string& key, std::string& data, std::string& error) {
+    Response r;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        r = Request("GET", key, "", nullptr, 0, "");
+        if (r.ok() || !IsRetryable(r.status)) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1 << attempt));
+    }
+    if (!r.ok()) {
+        error = r.status == 404 ? "Not found: " + key : Describe(r);
+        return false;
+    }
+    data = std::move(r.body);
+    return true;
+}
+
+bool S3Client::DownloadFile(const std::string& key, const std::filesystem::path& file, const S3Progress& progress,
+                            std::string& error, std::string* sha256Hex, bool* cancelled) {
+    if (cancelled) {
+        *cancelled = false;
+    }
+    uint64_t total = 0;
+    {
+        auto head = Request("HEAD", key, "", nullptr, 0, "");
+        if (!head.ok()) {
+            error = head.status == 404 ? "Not found: " + key : Describe(head);
+            return false;
+        }
+        if (auto it = head.headers.find("content-length"); it != head.headers.end()) {
+            total = std::strtoull(it->second.c_str(), nullptr, 10);
+        }
+    }
+
+    std::error_code ec;
+    Response r;
+    uint64_t got = 0;
+    Sha256 hasher;
+    // A failed attempt starts over from the beginning: simpler than ranged
+    // resumes, and backups are rarely large enough for it to matter.
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) {
+            error = "Unable to create " + PathUtf8(file);
+            return false;
+        }
+        got = 0;
+        hasher = Sha256();
+        RequestOptions opts;
+        opts.downloadProgress = true;
+        opts.progress = [&](uint64_t) { return !progress || progress(got, total); };
+        opts.sink = [&](const char* data, size_t len) {
+            out.write(data, (std::streamsize)len);
+            hasher.update(data, len);
+            got += len;
+            return out.good();
+        };
+        r = Send("GET", key, "", opts);
+        out.close();
+        if (r.ok() || r.aborted || !IsRetryable(r.status) || r.curlError.find("disk full") != std::string::npos) {
+            break;
+        }
+        spdlog::warn("S3: download of {} failed ({}), retrying", key, Describe(r));
+        if (!WaitBeforeRetry(2 << attempt, [&]() { return !progress || progress(0, total); })) {
+            r.aborted = true;
+            break;
+        }
+    }
+
+    if (r.aborted) {
+        if (cancelled) {
+            *cancelled = true;
+        }
+        error = "Cancelled";
+    } else if (!r.ok()) {
+        error = "Download failed: " + Describe(r);
+    } else if (total != 0 && got != total) {
+        error = "Download incomplete: " + std::to_string(got) + " of " + std::to_string(total) + " bytes received";
+    } else {
+        if (sha256Hex) {
+            *sha256Hex = Sha256::ToHex(hasher.finish());
+        }
+        if (progress) {
+            progress(got, got);
+        }
+        return true;
+    }
+    std::filesystem::remove(file, ec);
+    return false;
 }

@@ -11,13 +11,15 @@
  **************************************************************/
 
 // Builds a single Zip64 archive of a whole show folder (media included) plus
-// the rendered .fseq of every sequence, for the cloud backup. Works purely on
-// files on disk so it can run on a worker thread while the user keeps editing.
+// the rendered .fseq of every sequence, for the cloud backup, and extracts it
+// back for a restore. Works purely on files on disk so it can run on a worker
+// thread while the user keeps editing.
 //
 // Archive layout:
 //   show/<path relative to the show folder>   everything under the show folder
 //   fseq/<name>.fseq                          .fseq kept in a separate FSEQ folder
 //   media/<name>                              sequence audio living outside the show
+//   thumbnail.png                             optional picture of the layout
 //   manifest.json                             same content as the uploaded manifest,
 //                                             minus the "archive" section
 
@@ -27,6 +29,7 @@
 #include <functional>
 #include <list>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct ShowArchiveOptions {
@@ -37,6 +40,7 @@ struct ShowArchiveOptions {
     std::list<std::string> mediaDirs;
     // Folder names skipped at any depth (case-insensitive).
     std::vector<std::string> excludeDirNames{ "Backup", "RenderCache" };
+    bool includeFseq = true;
 };
 
 struct ShowArchiveEntry {
@@ -64,8 +68,11 @@ struct ShowArchivePlan {
     std::vector<ShowArchiveSequence> sequences;
     std::vector<std::string> warnings;
     uint64_t totalBytes = 0;
+    // Written as is at the root of the archive, e.g. thumbnail.png.
+    std::vector<std::pair<std::string, std::string>> extraFiles;
 
-    // Sequences whose .fseq is missing or older than the .xsq.
+    // Sequences whose .fseq is missing or older than the .xsq; always empty
+    // when .fseq files are not included.
     std::vector<std::string> StaleOrMissingFseq() const;
 };
 
@@ -93,8 +100,43 @@ struct ManifestInfo {
     std::string archiveKey;      // empty: no "archive" section
     uint64_t archiveSize = 0;
     std::string archiveSha256;
+    std::string thumbnailKey;    // uploaded next to the manifest, empty if none
 };
 std::string BuildManifest(const ShowArchivePlan& plan, const ManifestInfo& info);
+
+// What a restore needs from an uploaded manifest. ok is false when the text
+// is not a show backup manifest.
+struct BackupSummary {
+    bool ok = false;
+    std::string showName;
+    std::string createdUtc;
+    std::string xlightsVersion;
+    std::string archiveKey;
+    uint64_t archiveSize = 0;
+    std::string archiveSha256;
+    std::string thumbnailKey;
+    int fileCount = 0;
+    uint64_t totalBytes = 0;
+    int sequenceCount = 0;
+    bool fseqIncluded = true;
+};
+BackupSummary ParseManifest(const std::string& json);
+
+struct ShowRestoreResult {
+    bool ok = false;
+    bool cancelled = false;
+    std::string error;
+    std::vector<std::string> warnings;
+    int filesWritten = 0;
+};
+
+// Extracts an archive made by Create() into destDir, which should be empty:
+// show/ goes to the root, each .fseq from a separate FSEQ folder next to its
+// sequence, and audio from outside the show into "External Media". Entries
+// that would land outside destDir are refused. On failure or cancel the files
+// written so far are removed.
+ShowRestoreResult Extract(const std::filesystem::path& zip, const std::filesystem::path& destDir,
+                          const ShowArchiveProgress& progress = nullptr);
 
 // "2026-11-06T14:30:00Z" and "2026-11-06-143000" (UTC).
 std::string FormatUtcIso(time_t t);

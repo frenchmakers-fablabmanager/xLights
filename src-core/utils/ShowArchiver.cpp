@@ -16,12 +16,14 @@
 #include "XsqFileScanner.h"
 #include "xLightsVersion.h"
 
+#include <minizip/unzip.h>
 #include <minizip/zip.h>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <map>
@@ -189,6 +191,19 @@ int ZCALLBACK ZError(voidpf, voidpf stream) {
     return ferror((FILE*)stream);
 }
 
+zlib_filefunc64_def PathFileFuncs() {
+    zlib_filefunc64_def ff{};
+    ff.zopen64_file = ZOpen;
+    ff.zread_file = ZRead;
+    ff.zwrite_file = ZWrite;
+    ff.ztell64_file = ZTell;
+    ff.zseek64_file = ZSeek;
+    ff.zclose_file = ZClose;
+    ff.zerror_file = ZError;
+    ff.opaque = nullptr;
+    return ff;
+}
+
 void FillZipTime(zip_fileinfo& zi, long long mtime) {
     time_t t = (time_t)mtime;
     if (t == 0) {
@@ -232,10 +247,77 @@ std::string FormatUtc(time_t t, const char* fmt) {
     return buf;
 }
 
+// Normalised relative path, or empty when the entry would escape the
+// destination (absolute, drive-qualified or "..").
+std::string SafeRelative(std::string p) {
+    std::replace(p.begin(), p.end(), '\\', '/');
+    if (p.empty() || p.front() == '/' || p.find(':') != std::string::npos) {
+        return {};
+    }
+    std::string out;
+    size_t start = 0;
+    while (start <= p.size()) {
+        size_t end = p.find('/', start);
+        if (end == std::string::npos) {
+            end = p.size();
+        }
+        std::string part = p.substr(start, end - start);
+        if (part == "..") {
+            return {};
+        }
+        if (!part.empty() && part != ".") {
+            if (!out.empty()) {
+                out += '/';
+            }
+            out += part;
+        }
+        start = end + 1;
+    }
+    return out;
+}
+
+// Restored files keep their original dates, so a restored .fseq still reads
+// as newer than its sequence.
+void SetMTimeFromZip(const fs::path& p, const tm_unz& d) {
+    struct tm t {};
+    t.tm_sec = (int)d.tm_sec;
+    t.tm_min = (int)d.tm_min;
+    t.tm_hour = (int)d.tm_hour;
+    t.tm_mday = (int)d.tm_mday;
+    t.tm_mon = (int)d.tm_mon;
+    t.tm_year = (int)d.tm_year - 1900;
+    t.tm_isdst = -1;
+    time_t tt = mktime(&t);
+    if (tt == (time_t)-1) {
+        return;
+    }
+    auto delta = std::chrono::system_clock::from_time_t(tt) - std::chrono::system_clock::now();
+    auto ft = fs::file_time_type::clock::now() + std::chrono::duration_cast<fs::file_time_type::duration>(delta);
+    std::error_code ec;
+    fs::last_write_time(p, ft, ec);
+}
+
+std::string JsonString(const nlohmann::json& o, const char* key) {
+    auto it = o.find(key);
+    return (it != o.end() && it->is_string()) ? it->get<std::string>() : std::string();
+}
+
+uint64_t JsonUInt(const nlohmann::json& o, const char* key) {
+    auto it = o.find(key);
+    return (it != o.end() && it->is_number_unsigned()) ? it->get<uint64_t>() : 0;
+}
+
+bool StartsWith(const std::string& s, const char* prefix) {
+    return s.rfind(prefix, 0) == 0;
+}
+
 } // namespace
 
 std::vector<std::string> ShowArchivePlan::StaleOrMissingFseq() const {
     std::vector<std::string> res;
+    if (!options.includeFseq) {
+        return res;
+    }
     for (const auto& s : sequences) {
         if (s.fseqEntry < 0 || !s.fseqUpToDate) {
             res.push_back(s.name);
@@ -330,9 +412,13 @@ ShowArchivePlan Scan(const ShowArchiveOptions& options) {
         if (!de.is_regular_file(sec)) {
             continue;
         }
+        const std::string ext = Lower(ToUtf8(de.path().extension()));
+        if (!options.includeFseq && ext == ".fseq") {
+            continue;
+        }
         fs::path rel = de.path().lexically_relative(showRoot);
         addEntry(de.path(), "show/" + ToUtf8Generic(rel));
-        if (Lower(ToUtf8(de.path().extension())) == ".xsq") {
+        if (ext == ".xsq") {
             xsqFiles.push_back(de.path());
         }
     }
@@ -361,7 +447,7 @@ ShowArchivePlan Scan(const ShowArchiveOptions& options) {
 
         fs::path fseq = fseqElsewhere ? fseqRoot / xsq.stem() : xsq;
         fseq.replace_extension(".fseq");
-        if (FileExists(ToUtf8(fseq), false)) {
+        if (options.includeFseq && FileExists(ToUtf8(fseq), false)) {
             std::string zipName = IsInside(fseq, showRoot) ? "show/" + ToUtf8Generic(fseq.lexically_relative(showRoot))
                                                            : externalZipName("fseq", fseq);
             seq.fseqEntry = addEntry(fseq, zipName);
@@ -390,16 +476,7 @@ ShowArchivePlan Scan(const ShowArchiveOptions& options) {
 ShowArchiveResult Create(ShowArchivePlan& plan, const fs::path& outZip, const ShowArchiveProgress& progress) {
     ShowArchiveResult res;
 
-    zlib_filefunc64_def ff{};
-    ff.zopen64_file = ZOpen;
-    ff.zread_file = ZRead;
-    ff.zwrite_file = ZWrite;
-    ff.ztell64_file = ZTell;
-    ff.zseek64_file = ZSeek;
-    ff.zclose_file = ZClose;
-    ff.zerror_file = ZError;
-    ff.opaque = nullptr;
-
+    zlib_filefunc64_def ff = PathFileFuncs();
     zipFile zf = zipOpen2_64(&outZip, APPEND_STATUS_CREATE, nullptr, &ff);
     if (zf == nullptr) {
         res.error = "Unable to create archive " + ToUtf8(outZip);
@@ -478,6 +555,18 @@ ShowArchiveResult Create(ShowArchivePlan& plan, const fs::path& outZip, const Sh
         }
     }
 
+    for (const auto& [name, data] : plan.extraFiles) {
+        if (failed || res.cancelled) {
+            break;
+        }
+        if (!OpenEntry(zf, name, time(nullptr), IsAlreadyCompressed(FromUtf8(name)), false) ||
+            zipWriteInFileInZip(zf, data.data(), (unsigned)data.size()) != ZIP_OK) {
+            res.error = "Unable to write " + name + " into the archive";
+            failed = true;
+        }
+        zipCloseFileInZip(zf);
+    }
+
     if (!failed && !res.cancelled) {
         ShowArchiver::ManifestInfo info;
         info.showName = ToUtf8(FromUtf8(plan.options.showDir).lexically_normal().filename());
@@ -531,6 +620,15 @@ std::string BuildManifest(const ShowArchivePlan& plan, const ManifestInfo& info)
     }
     j["fileCount"] = files;
     j["totalBytes"] = bytes;
+    j["fseqIncluded"] = plan.options.includeFseq;
+    for (const auto& [name, data] : plan.extraFiles) {
+        if (name == "thumbnail.png") {
+            j["thumbnail"] = name;
+        }
+    }
+    if (!info.thumbnailKey.empty()) {
+        j["thumbnailKey"] = info.thumbnailKey;
+    }
 
     auto fileJson = [&](int idx) -> nlohmann::ordered_json {
         if (idx < 0 || !plan.entries[idx].written) {
@@ -559,6 +657,236 @@ std::string BuildManifest(const ShowArchivePlan& plan, const ManifestInfo& info)
     }
     j["sequences"] = seqs;
     return j.dump(2);
+}
+
+BackupSummary ParseManifest(const std::string& json) {
+    BackupSummary b;
+    auto j = nlohmann::json::parse(json, nullptr, false);
+    if (!j.is_object() || JsonString(j, "format") != "xlights-show-backup") {
+        return b;
+    }
+    b.ok = true;
+    b.showName = JsonString(j, "showName");
+    b.createdUtc = JsonString(j, "createdUtc");
+    b.xlightsVersion = JsonString(j, "xlightsVersion");
+    b.thumbnailKey = JsonString(j, "thumbnailKey");
+    b.fileCount = (int)JsonUInt(j, "fileCount");
+    b.totalBytes = JsonUInt(j, "totalBytes");
+    if (auto it = j.find("fseqIncluded"); it != j.end() && it->is_boolean()) {
+        b.fseqIncluded = it->get<bool>();
+    }
+    if (auto it = j.find("archive"); it != j.end() && it->is_object()) {
+        b.archiveKey = JsonString(*it, "key");
+        b.archiveSize = JsonUInt(*it, "size");
+        b.archiveSha256 = JsonString(*it, "sha256");
+    }
+    if (auto it = j.find("sequences"); it != j.end() && it->is_array()) {
+        b.sequenceCount = (int)it->size();
+    }
+    return b;
+}
+
+ShowRestoreResult Extract(const fs::path& zip, const fs::path& destDir, const ShowArchiveProgress& progress) {
+    ShowRestoreResult res;
+
+    zlib_filefunc64_def ff = PathFileFuncs();
+    unzFile uf = unzOpen2_64(&zip, &ff);
+    if (uf == nullptr) {
+        res.error = "Unable to open the archive " + ToUtf8(zip);
+        return res;
+    }
+
+    struct Item {
+        std::string name;
+        uint64_t size = 0;
+        tm_unz date{};
+    };
+    std::vector<Item> items;
+    std::string manifest;
+    uint64_t total = 0;
+    std::vector<char> buf(1024 * 1024);
+    std::vector<char> name(4096);
+
+    for (int rc = unzGoToFirstFile(uf); rc == UNZ_OK; rc = unzGoToNextFile(uf)) {
+        unz_file_info64 fi{};
+        if (unzGetCurrentFileInfo64(uf, &fi, name.data(), (uLong)name.size(), nullptr, 0, nullptr, 0) != UNZ_OK) {
+            res.error = "The archive is damaged";
+            unzClose(uf);
+            return res;
+        }
+        Item it;
+        it.name = name.data();
+        it.size = fi.uncompressed_size;
+        it.date = fi.tmu_date;
+        if (it.name == "manifest.json" && it.size < 64ull * 1024 * 1024 && unzOpenCurrentFile(uf) == UNZ_OK) {
+            int n;
+            while ((n = unzReadCurrentFile(uf, buf.data(), (unsigned)buf.size())) > 0) {
+                manifest.append(buf.data(), (size_t)n);
+            }
+            unzCloseCurrentFile(uf);
+        }
+        total += it.size;
+        items.push_back(std::move(it));
+    }
+
+    // .fseq files from a separate FSEQ folder go back next to their sequence,
+    // where xLights looks for them when the FSEQ folder is the show folder.
+    std::map<std::string, std::string> fseqTargets;
+    auto j = nlohmann::json::parse(manifest, nullptr, false);
+    if (j.is_object()) {
+        if (auto seqs = j.find("sequences"); seqs != j.end() && seqs->is_array()) {
+            for (const auto& sq : *seqs) {
+                if (!sq.is_object()) {
+                    continue;
+                }
+                auto f = sq.find("fseq");
+                if (f == sq.end() || !f->is_object()) {
+                    continue;
+                }
+                std::string xsq = JsonString(sq, "xsq");
+                std::string fp = JsonString(*f, "path");
+                if (StartsWith(fp, "fseq/") && StartsWith(xsq, "show/")) {
+                    fs::path t = FromUtf8(xsq.substr(5));
+                    t.replace_extension(".fseq");
+                    fseqTargets[fp] = ToUtf8Generic(t);
+                }
+            }
+        }
+    }
+
+    std::error_code ec;
+    const bool createdDest = !fs::exists(destDir, ec);
+    fs::create_directories(destDir, ec);
+    if (!fs::is_directory(destDir, ec)) {
+        res.error = "Unable to create the folder " + ToUtf8(destDir);
+        unzClose(uf);
+        return res;
+    }
+    auto space = fs::space(destDir, ec);
+    if (!ec && space.available < total + 16ull * 1024 * 1024) {
+        res.error = "Not enough free disk space in " + ToUtf8(destDir) + ": " + std::to_string(total / (1024 * 1024)) +
+                    " MB needed, " + std::to_string(space.available / (1024 * 1024)) + " MB available.";
+        unzClose(uf);
+        if (createdDest) {
+            fs::remove(destDir, ec);
+        }
+        return res;
+    }
+
+    std::vector<fs::path> written;
+    uint64_t done = 0;
+    bool failed = false;
+    size_t index = 0;
+    bool separateFseq = false;
+    bool externalMedia = false;
+
+    for (int rc = unzGoToFirstFile(uf); rc == UNZ_OK && index < items.size(); rc = unzGoToNextFile(uf), ++index) {
+        const Item& it = items[index];
+        std::string target;
+        if (StartsWith(it.name, "show/")) {
+            target = it.name.substr(5);
+        } else if (StartsWith(it.name, "fseq/")) {
+            auto t = fseqTargets.find(it.name);
+            target = t != fseqTargets.end() ? t->second : it.name.substr(5);
+        } else if (StartsWith(it.name, "media/")) {
+            target = "External Media/" + it.name.substr(6);
+        } else {
+            done += it.size;
+            continue;
+        }
+        const bool isDir = !it.name.empty() && it.name.back() == '/';
+        std::string rel = SafeRelative(target);
+        if (rel.empty()) {
+            if (!isDir) {
+                res.warnings.push_back("Skipped " + it.name + ": invalid path");
+            }
+            done += it.size;
+            continue;
+        }
+        fs::path out = destDir / FromUtf8(rel);
+        if (isDir) {
+            fs::create_directories(out, ec);
+            continue;
+        }
+        if (progress && !progress(done, total, rel)) {
+            res.cancelled = true;
+            break;
+        }
+        if (fs::exists(out, ec)) {
+            res.warnings.push_back("Skipped " + rel + ": a file with that name already exists");
+            done += it.size;
+            continue;
+        }
+        fs::create_directories(out.parent_path(), ec);
+        if (unzOpenCurrentFile(uf) != UNZ_OK) {
+            res.error = "Unable to read " + it.name + " from the archive";
+            failed = true;
+            break;
+        }
+        std::ofstream o(out, std::ios::binary | std::ios::trunc);
+        if (!o.is_open()) {
+            unzCloseCurrentFile(uf);
+            res.error = "Unable to create " + ToUtf8(out);
+            failed = true;
+            break;
+        }
+        written.push_back(out);
+        int n;
+        while ((n = unzReadCurrentFile(uf, buf.data(), (unsigned)buf.size())) > 0) {
+            o.write(buf.data(), n);
+            if (!o) {
+                break;
+            }
+            done += (uint64_t)n;
+            if (progress && !progress(done, total, rel)) {
+                res.cancelled = true;
+                break;
+            }
+        }
+        const bool writeOk = (bool)o;
+        o.close();
+        int closeRc = unzCloseCurrentFile(uf);
+        if (res.cancelled) {
+            break;
+        }
+        if (n < 0 || closeRc == UNZ_CRCERROR) {
+            res.error = "The archive is damaged: " + it.name + " could not be read correctly";
+            failed = true;
+            break;
+        }
+        if (!writeOk) {
+            res.error = "Write error on " + ToUtf8(out) + " (disk full?)";
+            failed = true;
+            break;
+        }
+        SetMTimeFromZip(out, it.date);
+        ++res.filesWritten;
+        separateFseq |= StartsWith(it.name, "fseq/");
+        externalMedia |= StartsWith(it.name, "media/");
+    }
+    unzClose(uf);
+
+    if (failed || res.cancelled) {
+        if (createdDest) {
+            fs::remove_all(destDir, ec);
+        } else {
+            for (const auto& p : written) {
+                fs::remove(p, ec);
+            }
+        }
+        spdlog::warn("ShowArchiver: restore {} ({})", res.cancelled ? "cancelled" : "failed", res.error);
+        return res;
+    }
+    if (separateFseq) {
+        res.warnings.push_back("This show used a separate FSEQ folder. The .fseq files were placed next to their "
+                               "sequences: after opening the show, check the FSEQ folder in Preferences > Sequences.");
+    }
+    if (externalMedia) {
+        res.warnings.push_back("Audio files that were outside the show folder were placed in \"External Media\".");
+    }
+    res.ok = true;
+    spdlog::info("ShowArchiver: restored {} files from {} to {}", res.filesWritten, ToUtf8(zip), ToUtf8(destDir));
+    return res;
 }
 
 } // namespace ShowArchiver

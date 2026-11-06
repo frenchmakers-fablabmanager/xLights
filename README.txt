@@ -12,6 +12,10 @@ XLIGHTS/NUTCRACKER RELEASE NOTES
 ---------------------------------
 2026.20  October ??, 2026
 
+    -enh (FrenchMakers)          File > Backup to Cloud uploads the whole show folder (media, rendered .fseq
+                                 files and a layout thumbnail included) to Cloudflare R2 or any S3-compatible
+                                 storage, in the background with progress. File > Restore from Cloud brings a
+                                 chosen backup back into a new folder. Set it up in Preferences > Cloud Storage
     -enh (heffneil)              Sequence Settings > Meta Data: Imported From sequences can now be added, changed or removed
     -bug (dkulp)                 Guitar effect: Bass Guitar uses bass chord shapes, and the Wave appearance
                                  swings to both sides of the string (it differed between Intel and Apple Silicon)

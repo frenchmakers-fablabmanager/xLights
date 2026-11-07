@@ -36,7 +36,6 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
-#include <map>
 
 namespace fs = std::filesystem;
 
@@ -170,6 +169,9 @@ CloudRestoreDialog::CloudRestoreDialog(wxWindow* parent, CloudRestoreHooks hooks
     top->Add(_log, 0, wxEXPAND | wxLEFT | wxRIGHT, 10);
 
     auto* buttons = new wxBoxSizer(wxHORIZONTAL);
+    _deleteButton = new wxButton(this, wxID_ANY, _("Delete Backup..."));
+    _deleteButton->SetToolTip(_("Removes the selected backup from the bucket to free space."));
+    buttons->Add(_deleteButton, 0);
     buttons->AddStretchSpacer();
     _restoreButton = new wxButton(this, wxID_ANY, _("Restore"));
     buttons->Add(_restoreButton, 0, wxRIGHT, 6);
@@ -184,6 +186,7 @@ CloudRestoreDialog::CloudRestoreDialog(wxWindow* parent, CloudRestoreHooks hooks
     _backupList->Bind(wxEVT_LIST_ITEM_SELECTED, &CloudRestoreDialog::OnBackupSelected, this);
     _browse->Bind(wxEVT_BUTTON, &CloudRestoreDialog::OnBrowse, this);
     _restoreButton->Bind(wxEVT_BUTTON, &CloudRestoreDialog::OnRestore, this);
+    _deleteButton->Bind(wxEVT_BUTTON, &CloudRestoreDialog::OnDelete, this);
     _closeButton->Bind(wxEVT_BUTTON, &CloudRestoreDialog::OnClose, this);
     _refreshButton->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { Reload(); });
     _settingsButton->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
@@ -225,8 +228,7 @@ void CloudRestoreDialog::RunTask(std::function<void()> task) {
 }
 
 std::string CloudRestoreDialog::ShowFolderKey(const std::string& show) const {
-    std::string prefix = TrimSlashes(_settings.prefix);
-    return (prefix.empty() ? "" : prefix + "/") + show + "/";
+    return CloudBackupStore::ShowFolderKey(_settings.prefix, show);
 }
 
 std::string CloudRestoreDialog::DefaultDestination(const std::string& show, const std::string& stamp) const {
@@ -253,15 +255,16 @@ void CloudRestoreDialog::SetStatus(const wxString& text, bool error) {
 }
 
 void CloudRestoreDialog::UpdateButtons() {
-    bool idle = !_restoring;
+    bool idle = !_restoring && !_deleting;
     _restoreButton->Enable(idle && _selectedBackup >= 0 && _summary.ok);
+    _deleteButton->Enable(idle && _selectedBackup >= 0);
     _shows->Enable(idle);
     _backupList->Enable(idle);
     _dest->Enable(idle);
     _browse->Enable(idle);
     _refreshButton->Enable(idle);
     _settingsButton->Enable(idle);
-    _closeButton->SetLabel(idle ? _("Close") : _("Cancel"));
+    _closeButton->SetLabel(_restoring ? _("Cancel") : _("Close"));
 }
 
 void CloudRestoreDialog::Reload() {
@@ -349,7 +352,7 @@ void CloudRestoreDialog::OnShowSelected(wxCommandEvent& event) {
     }
 }
 
-void CloudRestoreDialog::LoadBackups(const std::string& show) {
+void CloudRestoreDialog::LoadBackups(const std::string& show, const wxString& doneStatus, bool doneIsError) {
     int gen = ++_generation;
     _backupList->DeleteAllItems();
     _backups.clear();
@@ -361,42 +364,17 @@ void CloudRestoreDialog::LoadBackups(const std::string& show) {
     SetStatus(_("Listing backups..."));
     S3Config cfg = _settings.ToS3Config();
     std::string folder = ShowFolderKey(show);
-    RunTask([this, gen, cfg, folder]() {
+    RunTask([this, gen, cfg, folder, doneStatus, doneIsError]() {
         S3Client client(cfg);
         std::vector<S3Object> objects;
         std::vector<std::string> unused;
         std::string error;
         bool ok = client.ListObjects(folder, "", objects, unused, error);
-        std::map<std::string, uint64_t> sizes;
-        for (const auto& o : objects) {
-            sizes[o.key] = o.size;
-        }
-        std::vector<Backup> backups;
-        const std::string suffix = ".manifest.json";
-        for (const auto& o : objects) {
-            std::string name = o.key.substr(folder.size());
-            if (!EndsWith(name, suffix) || name.find('/') != std::string::npos || name == "latest" + suffix) {
-                continue;
-            }
-            Backup b;
-            b.stamp = name.substr(0, name.size() - suffix.size());
-            b.manifestKey = o.key;
-            b.zipKey = folder + b.stamp + ".zip";
-            auto z = sizes.find(b.zipKey);
-            if (z == sizes.end()) {
-                continue;
-            }
-            b.zipSize = z->second;
-            if (sizes.count(folder + b.stamp + ".thumbnail.png")) {
-                b.thumbnailKey = folder + b.stamp + ".thumbnail.png";
-            }
-            backups.push_back(std::move(b));
-        }
-        std::sort(backups.begin(), backups.end(), [](const Backup& a, const Backup& b) { return a.stamp > b.stamp; });
+        std::vector<Backup> backups = CloudBackupStore::FromListing(objects, folder);
         if (_closing) {
             return;
         }
-        CallAfter([this, gen, ok, error, backups]() {
+        CallAfter([this, gen, ok, error, backups, doneStatus, doneIsError]() {
             if (gen != _generation) {
                 return;
             }
@@ -410,10 +388,10 @@ void CloudRestoreDialog::LoadBackups(const std::string& show) {
                 _backupList->SetItem(row, 1, wxString::FromUTF8(CloudFormatBytes(backups[i].zipSize)));
             }
             if (backups.empty()) {
-                SetStatus(_("This show has no complete backup."));
+                SetStatus(doneStatus.empty() ? _("This show has no complete backup.") : doneStatus, doneIsError);
                 return;
             }
-            SetStatus(wxEmptyString);
+            SetStatus(doneStatus, doneIsError);
             _backupList->SetItemState(0, wxLIST_STATE_SELECTED | wxLIST_STATE_FOCUSED, wxLIST_STATE_SELECTED | wxLIST_STATE_FOCUSED);
         });
     });
@@ -503,8 +481,57 @@ void CloudRestoreDialog::OnBrowse(wxCommandEvent& event) {
     }
 }
 
+void CloudRestoreDialog::OnDelete(wxCommandEvent& event) {
+    int showSel = _shows->GetSelection();
+    if (_restoring || _deleting || _selectedBackup < 0 || _selectedBackup >= (int)_backups.size() ||
+        showSel < 0 || showSel >= (int)_showNames.size()) {
+        return;
+    }
+    const std::string show = _showNames[showSel];
+    const Backup b = _backups[_selectedBackup];
+    wxString msg = wxString::Format(_("Delete the backup of \"%s\" made on %s (%s) from the bucket?\n\nThis cannot be undone."),
+                                    wxString::FromUTF8(show), DisplayStamp(b.stamp), wxString::FromUTF8(CloudFormatBytes(b.zipSize)));
+    if (_backups.size() == 1) {
+        msg += _("\n\nIt is the only backup of this show.");
+    }
+    if (wxMessageBox(msg, _("Delete Backup"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES) {
+        return;
+    }
+
+    _deleting = true;
+    UpdateButtons();
+    SetStatus(_("Deleting the backup..."));
+    _gauge->Pulse();
+    S3Config cfg = _settings.ToS3Config();
+    std::string folder = ShowFolderKey(show);
+    std::vector<Backup> all = _backups;
+    RunTask([this, cfg, folder, all, b, show]() {
+        S3Client client(cfg);
+        std::string error;
+        bool ok = CloudBackupStore::Delete(CloudObjectOps::For(client), folder, all, { b }, error);
+        if (ok) {
+            spdlog::info("Cloud restore: deleted backup {}", b.zipKey);
+        } else {
+            spdlog::warn("Cloud restore: deleting backup {} failed: {}", b.zipKey, error);
+        }
+        if (_closing) {
+            return;
+        }
+        CallAfter([this, ok, error, show, lastOne = all.size() == 1]() {
+            _deleting = false;
+            _gauge->SetValue(0);
+            if (ok && lastOne) {
+                Reload();
+                return;
+            }
+            // Reload either way: a failed delete may have removed part of the backup.
+            LoadBackups(show, ok ? _("Backup deleted.") : _("Unable to delete the backup: ") + wxString::FromUTF8(error), !ok);
+        });
+    });
+}
+
 void CloudRestoreDialog::OnRestore(wxCommandEvent& event) {
-    if (_restoring || _selectedBackup < 0 || _selectedBackup >= (int)_backups.size() || !_summary.ok) {
+    if (_restoring || _deleting || _selectedBackup < 0 || _selectedBackup >= (int)_backups.size() || !_summary.ok) {
         return;
     }
     std::string dest = _dest->GetValue().utf8_string();

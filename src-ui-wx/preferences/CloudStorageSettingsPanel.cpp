@@ -19,6 +19,7 @@
 #include <wx/choice.h>
 #include <wx/preferences.h>
 #include <wx/sizer.h>
+#include <wx/spinctrl.h>
 #include <wx/statbox.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
@@ -91,12 +92,22 @@ CloudStorageSettingsPanel::CloudStorageSettingsPanel(wxWindow* parent, wxWindowI
     _includeThumbnail = new wxCheckBox(backupBox->GetStaticBox(), wxID_ANY, _("Include a thumbnail of the layout (.png)"));
     _includeThumbnail->SetToolTip(_("Shown when choosing a backup to restore."));
     backupBox->Add(_includeThumbnail, 0, wxALL, 4);
+    auto* keepRow = new wxBoxSizer(wxHORIZONTAL);
+    keepRow->Add(new wxStaticText(backupBox->GetStaticBox(), wxID_ANY, _("Keep the last")), 0, wxALIGN_CENTER_VERTICAL);
+    _keepBackups = new wxSpinCtrl(backupBox->GetStaticBox(), wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
+                                  wxSP_ARROW_KEYS, 0, CloudStorageSettings::MAX_KEEP_BACKUPS, 0);
+    keepRow->Add(_keepBackups, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 6);
+    keepRow->Add(new wxStaticText(backupBox->GetStaticBox(), wxID_ANY, _("backups of each show (0 = keep them all)")), 0, wxALIGN_CENTER_VERTICAL);
+    _keepBackups->SetToolTip(_("After each successful backup, older backups of the same show are deleted from the bucket.\n"
+                               "Backups can also be deleted one at a time from File > Restore from Cloud."));
+    backupBox->Add(keepRow, 0, wxALL, 4);
     top->Add(backupBox, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
 
     auto* note = new wxStaticText(this, wxID_ANY,
                                   _("Cloudflare R2 is recommended: its free tier includes 10 GB of storage and free downloads.\n"
                                     "Use a token limited to the backup bucket and keep it private: anyone with these keys can\n"
                                     "read the backups, audio files included. Never make the bucket public.\n"
+                                    "On storage with versioning or object lock turned on, deleted backups can still use space.\n"
                                     "Settings are stored on this computer; the secret key is kept in the system's secure storage."));
     top->Add(note, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
 
@@ -110,6 +121,8 @@ CloudStorageSettingsPanel::CloudStorageSettingsPanel(wxWindow* parent, wxWindowI
     for (auto* c : { _pathStyle, _includeFseq, _includeThumbnail }) {
         c->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { ApplyIfImmediate(false); });
     }
+    _keepBackups->Bind(wxEVT_SPINCTRL, [this](wxSpinEvent&) { ApplyIfImmediate(false); });
+    _keepBackups->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { ApplyIfImmediate(false); });
     for (auto* t : { _accountId, _endpoint, _region, _bucket, _prefix, _accessKey }) {
         t->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { ApplyIfImmediate(false); });
     }
@@ -144,6 +157,7 @@ CloudStorageSettings CloudStorageSettingsPanel::FromControls() const {
     s.secretAccessKey = _secretKey->GetValue().utf8_string();
     s.includeFseq = _includeFseq->GetValue();
     s.includeThumbnail = _includeThumbnail->GetValue();
+    s.keepBackups = _keepBackups->GetValue();
     return s;
 }
 
@@ -181,6 +195,7 @@ bool CloudStorageSettingsPanel::TransferDataToWindow() {
     _secretKey->ChangeValue(wxString::FromUTF8(s.secretAccessKey));
     _includeFseq->SetValue(s.includeFseq);
     _includeThumbnail->SetValue(s.includeThumbnail);
+    _keepBackups->SetValue(s.keepBackups);
     _savedSecret = s.secretAccessKey;
     UpdateEnabled();
     _loading = false;

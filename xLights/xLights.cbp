@@ -1621,6 +1621,8 @@
 		<Unit filename="../src-core/utils/S3Client.h" />
 		<Unit filename="../src-core/utils/Sha256.cpp" />
 		<Unit filename="../src-core/utils/Sha256.h" />
+		<Unit filename="../src-core/utils/CloudBackupStore.cpp" />
+		<Unit filename="../src-core/utils/CloudBackupStore.h" />
 		<Unit filename="../src-core/utils/ShowArchiver.cpp" />
 		<Unit filename="../src-core/utils/ShowArchiver.h" />
 		<Unit filename="../src-core/utils/CurlManager.cpp" />

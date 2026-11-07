@@ -14,6 +14,8 @@
 #include "settings/XLightsConfigAdapter.h"
 #include "utils/string_utils.h"
 
+#include <algorithm>
+
 namespace {
 
 const char* SECRET_NAME = "xLightsCloudStorage";
@@ -33,6 +35,7 @@ CloudStorageSettings CloudStorageSettings::Load(bool loadSecret) {
     s.pathStyle = config->ReadBool("CloudStoragePathStyle", true);
     s.includeFseq = config->ReadBool("CloudStorageIncludeFseq", true);
     s.includeThumbnail = config->ReadBool("CloudStorageIncludeThumbnail", true);
+    s.keepBackups = std::clamp((int)config->ReadLong("CloudStorageKeepBackups", 0), 0, MAX_KEEP_BACKUPS);
     if (loadSecret) {
         WxServiceSettingsStore store;
         s.secretAccessKey = store.getSecret(SECRET_NAME);
@@ -52,6 +55,7 @@ void CloudStorageSettings::Save() const {
     config->Write("CloudStoragePathStyle", pathStyle);
     config->Write("CloudStorageIncludeFseq", includeFseq);
     config->Write("CloudStorageIncludeThumbnail", includeThumbnail);
+    config->Write("CloudStorageKeepBackups", std::clamp(keepBackups, 0, MAX_KEEP_BACKUPS));
     config->Flush();
     WxServiceSettingsStore store;
     store.setSecret(SECRET_NAME, Trim(secretAccessKey));

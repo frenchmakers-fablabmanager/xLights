@@ -20,6 +20,7 @@
 struct CloudStorageSettings {
     static constexpr const char* PROVIDER_R2 = "r2";
     static constexpr const char* PROVIDER_S3 = "s3";
+    static constexpr int MAX_KEEP_BACKUPS = 999;
 
     std::string provider = PROVIDER_R2;
     std::string r2AccountId;
@@ -33,6 +34,7 @@ struct CloudStorageSettings {
     // What File > Backup to Cloud adds besides the show folder.
     bool includeFseq = true;
     bool includeThumbnail = true;
+    int keepBackups = 0; // backups of each show kept after a backup; 0 keeps them all
 
     // loadSecret = false avoids touching the secure store (which can prompt
     // on macOS) when only the plain settings are needed.

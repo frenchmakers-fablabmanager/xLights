@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "CloudStorageSettings.h"
+#include "utils/CloudBackupStore.h"
 #include "utils/ShowArchiver.h"
 
 class wxButton;
@@ -54,19 +55,14 @@ public:
     void CancelAndWait();
 
 private:
-    struct Backup {
-        std::string stamp;        // 2026-11-06-143000 (UTC)
-        std::string manifestKey;
-        std::string zipKey;
-        std::string thumbnailKey; // empty when there is none
-        uint64_t zipSize = 0;
-    };
+    using Backup = CloudBackup;
     enum Stage { DOWNLOADING, VERIFYING, EXTRACTING };
 
     void RunTask(std::function<void()> task);
     void Reload();
     void LoadShows();
-    void LoadBackups(const std::string& show);
+    // doneStatus is shown once the list is loaded.
+    void LoadBackups(const std::string& show, const wxString& doneStatus = wxString(), bool doneIsError = false);
     void LoadDetails(const Backup& b);
     void StartRestore();
     void RestoreWorker(S3Config cfg, Backup b, ShowArchiver::BackupSummary summary, std::string dest);
@@ -82,6 +78,7 @@ private:
     void OnBackupSelected(wxListEvent& event);
     void OnBrowse(wxCommandEvent& event);
     void OnRestore(wxCommandEvent& event);
+    void OnDelete(wxCommandEvent& event);
     void OnClose(wxCommandEvent& event);
     void OnCloseWindow(wxCloseEvent& event);
     void OnTimer(wxTimerEvent& event);
@@ -99,6 +96,7 @@ private:
     int _selectedBackup = -1;
     ShowArchiver::BackupSummary _summary;
     bool _destEdited = false;
+    bool _deleting = false;
 
     std::atomic<bool> _restoring{ false };
     std::atomic<bool> _cancel{ false };
@@ -121,6 +119,7 @@ private:
     wxTextCtrl* _log = nullptr;
     wxButton* _settingsButton = nullptr;
     wxButton* _refreshButton = nullptr;
+    wxButton* _deleteButton = nullptr;
     wxButton* _restoreButton = nullptr;
     wxButton* _closeButton = nullptr;
 };

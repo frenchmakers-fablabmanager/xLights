@@ -11,6 +11,7 @@
 #include "CloudBackupDialog.h"
 
 #include "layout/ModelPreview.h"
+#include "utils/CloudBackupStore.h"
 #include "utils/S3Client.h"
 
 #include <wx/button.h>
@@ -59,14 +60,28 @@ std::string FormatDuration(double secs) {
     return buf;
 }
 
-std::string TrimSlashes(std::string s) {
-    while (!s.empty() && (s.back() == '/' || s.back() == '\\')) {
-        s.pop_back();
+// Deletes the backups of folder beyond the newest keep, never the one just
+// uploaded. A failure only adds a warning: the new backup is already safe.
+std::string PruneOldBackups(S3Client& client, const std::string& folder, const std::string& newStamp, int keep,
+                            std::vector<std::string>& warnings) {
+    std::vector<S3Object> objects;
+    std::vector<std::string> unused;
+    std::string error;
+    if (!client.ListObjects(folder, "", objects, unused, error)) {
+        warnings.push_back("Older backups were not deleted: unable to list them: " + error);
+        return {};
     }
-    while (!s.empty() && (s.front() == '/' || s.front() == '\\')) {
-        s.erase(0, 1);
+    auto all = CloudBackupStore::FromListing(objects, folder);
+    auto old = CloudBackupStore::SelectForPruning(all, keep, newStamp);
+    if (old.empty()) {
+        return {};
     }
-    return s;
+    if (!CloudBackupStore::Delete(CloudObjectOps::For(client), folder, all, old, error)) {
+        warnings.push_back("Some older backups could not be deleted: " + error);
+        return {};
+    }
+    spdlog::info("Cloud backup: deleted {} older backup(s) of {}", old.size(), folder);
+    return "Deleted " + std::to_string(old.size()) + " older backup(s), keeping the last " + std::to_string(keep) + ".";
 }
 
 fs::path FromUtf8(const std::string& s) {
@@ -243,8 +258,7 @@ void CloudBackupDialog::Run() {
     }
 
     std::string showName = ToUtf8(FromUtf8(_job.archive.showDir).lexically_normal().filename());
-    std::string prefix = TrimSlashes(settings.prefix);
-    std::string folder = (prefix.empty() ? "" : prefix + "/") + showName + "/";
+    std::string folder = CloudBackupStore::ShowFolderKey(settings.prefix, showName);
     const std::string stamp = ShowArchiver::FormatUtcForKey(now);
     std::string zipKey = folder + stamp + ".zip";
 
@@ -293,9 +307,14 @@ void CloudBackupDialog::Run() {
     }
 
     spdlog::info("Cloud backup: uploaded {} ({} bytes)", zipKey, archive.archiveSize);
-    Finish(true, false,
-           "Backup uploaded to " + settings.bucket + "/" + zipKey + " (" + CloudFormatBytes(archive.archiveSize) + ").",
-           archive.warnings);
+    std::string message = "Backup uploaded to " + settings.bucket + "/" + zipKey + " (" + CloudFormatBytes(archive.archiveSize) + ").";
+    if (settings.keepBackups > 0) {
+        std::string pruned = PruneOldBackups(client, folder, stamp, settings.keepBackups, archive.warnings);
+        if (!pruned.empty()) {
+            message += " " + pruned;
+        }
+    }
+    Finish(true, false, message, archive.warnings);
 }
 
 void CloudBackupDialog::Finish(bool ok, bool cancelled, const std::string& message, const std::vector<std::string>& warnings) {

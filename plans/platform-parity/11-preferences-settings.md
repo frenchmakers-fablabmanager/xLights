@@ -24,7 +24,7 @@ iPad scope: there is **no** Preferences/Settings screen or menu item. `FolderCon
 
 | # | Page / Setting | Desktop evidence | iPad status | iPad evidence / gap |
 |---|---|---|---|---|
-| 114 | Cloud Storage page (provider, endpoint, bucket, prefix, keys, Test Connection; include `.fseq` / layout thumbnail in backups) | Registered `xLightsPreferences.cpp:200` (cloud icon `xlART_CLOUD`); settings `app-shell/CloudStorageSettings.cpp:32` (config keys `CloudStorage*`, secret in `wxSecretStore`) | ❌ | No cloud storage on iPad — see 01 rows 182–184 |
+| 114 | Cloud Storage page (provider, endpoint, bucket, prefix, keys, Test Connection; include `.fseq` / layout thumbnail in backups, keep the last N backups) | Registered `xLightsPreferences.cpp:200` (cloud icon `xlART_CLOUD`); settings `app-shell/CloudStorageSettings.cpp:32` (config keys `CloudStorage*`, secret in `wxSecretStore`) | ❌ | No cloud storage on iPad — see 01 rows 182–184 |
 
 ### Page: View (`src-ui-wx/preferences/ViewSettingsPanel.cpp`)
 

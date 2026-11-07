@@ -17,6 +17,7 @@
 class wxButton;
 class wxCheckBox;
 class wxChoice;
+class wxSpinCtrl;
 class wxStaticText;
 class wxTextCtrl;
 struct CloudStorageSettings;
@@ -48,6 +49,7 @@ private:
     wxStaticText* _testResult = nullptr;
     wxCheckBox* _includeFseq = nullptr;
     wxCheckBox* _includeThumbnail = nullptr;
+    wxSpinCtrl* _keepBackups = nullptr;
 
     std::string _savedSecret;
     bool _loading = false;

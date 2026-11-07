@@ -641,6 +641,7 @@ xcopy /Y /S /I "$(SolutionDir)..\resources\meshobjects\*" "$(TargetDir)meshobjec
     <ClCompile Include="..\src-core\utils\TempFileManager.cpp" />
     <ClCompile Include="..\src-core\utils\S3Client.cpp" />
     <ClCompile Include="..\src-core\utils\Sha256.cpp" />
+    <ClCompile Include="..\src-core\utils\CloudBackupStore.cpp" />
     <ClCompile Include="..\src-core\utils\ShowArchiver.cpp" />
     <ClCompile Include="..\src-core\utils\CurlManager.cpp" />
     <ClCompile Include="..\src-core\utils\ip_utils.cpp" />
@@ -1374,6 +1375,7 @@ xcopy /Y /S /I "$(SolutionDir)..\resources\meshobjects\*" "$(TargetDir)meshobjec
     <ClInclude Include="..\src-core\utils\TempFileManager.h" />
     <ClInclude Include="..\src-core\utils\S3Client.h" />
     <ClInclude Include="..\src-core\utils\Sha256.h" />
+    <ClInclude Include="..\src-core\utils\CloudBackupStore.h" />
     <ClInclude Include="..\src-core\utils\ShowArchiver.h" />
     <ClInclude Include="..\src-core\utils\CurlManager.h" />
     <ClInclude Include="..\src-core\utils\FloatChecks.h" />
